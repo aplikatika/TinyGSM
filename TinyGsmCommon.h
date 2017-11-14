@@ -23,7 +23,7 @@
 #include <TinyGsmFifo.h>
 
 #ifndef TINY_GSM_YIELD
-  #define TINY_GSM_YIELD() { delay(0); }
+  #define TINY_GSM_YIELD() delay(0)
 #endif
 
 #define TINY_GSM_ATTR_NOT_AVAILABLE __attribute__((error("Not available on this modem type")))
@@ -180,5 +180,15 @@ String TinyGsmDecodeHex16bit(String &instr) {
   }
   return result;
 }
+
+typedef const GsmConstStr TinyGsmSmsStatusStr;
+
+typedef struct {
+  static const TinyGsmSmsStatusStr receivedUnread  = GFP("REC UNREAD");
+  static const TinyGsmSmsStatusStr receivedRead    = GFP("REC READ");
+  static const TinyGsmSmsStatusStr storedUnsent    = GFP("STO UNSENT");
+  static const TinyGsmSmsStatusStr storedSent      = GFP("STO SENT");
+  static const TinyGsmSmsStatusStr all             = GFP("ALL");
+} TinyGsmSmsStatus;
 
 #endif

@@ -39,7 +39,6 @@ enum RegStatus {
   REG_UNKNOWN      = 4,
 };
 
-
 class TinyGsmSim800
 {
 
@@ -61,7 +60,6 @@ public:
     this->at = modem;
     this->mux = mux;
     sock_available = 0;
-    prev_check = 0;
     sock_connected = false;
     got_data = false;
 
@@ -113,9 +111,10 @@ public:
       // Workaround: sometimes SIM800 forgets to notify about data arrival.
       // TODO: Currently we ping the module periodically,
       // but maybe there's a better indicator that we need to poll
-      if (millis() - prev_check > 500) {
+      static unsigned long timeout = 0;
+      if (0 < (long)(timeout - millis())) {
+        timeout = millis() + 500L;
         got_data = true;
-        prev_check = millis();
       }
       at->maintain();
     }
@@ -174,7 +173,6 @@ private:
   TinyGsmSim800* at;
   uint8_t       mux;
   uint16_t      sock_available;
-  uint32_t      prev_check;
   bool          sock_connected;
   bool          got_data;
   RxFifo        rx;
@@ -223,10 +221,14 @@ public:
     if (waitResponse() != 1) {
       return false;
     }
-
+  
     // PREFERRED SMS STORAGE
     sendAT(GF("+CPMS="), GF("\"SM\""), GF(","), GF("\"SM\""), GF(","), GF("\"SM\""));
     waitResponse();
+  sendAT(GF("+CMGF=1")); // SMS set TEXT mode
+  waitResponse();
+  sendAT(GF("+CSDH=0")); // SMS don't show all header values
+  waitResponse();
 
     getSimStatus();
     return true;
@@ -238,7 +240,7 @@ public:
 
   bool testAT(unsigned long timeout = 10000L) {
     //streamWrite(GF("AAAAA" GSM_NL));  // TODO: extra A's to help detect the baud rate
-    for (unsigned long start = millis(); millis() - start < timeout; ) {
+    for (timeout += millis(); 0 < (long)(timeout - millis()); ) {
       sendAT(GF(""));
       if (waitResponse(200) == 1) {
           delay(100);
@@ -373,7 +375,7 @@ public:
   }
 
   SimStatus getSimStatus(unsigned long timeout = 10000L) {
-    for (unsigned long start = millis(); millis() - start < timeout; ) {
+    for (timeout += millis(); 0 < (long)(timeout - millis()); ) {
       sendAT(GF("+CPIN?"));
       if (waitResponse(GF(GSM_NL "+CPIN:")) != 1) {
         delay(1000);
@@ -433,7 +435,7 @@ public:
   }
 
   bool waitForNetwork(unsigned long timeout = 60000L) {
-    for (unsigned long start = millis(); millis() - start < timeout; ) {
+    for (timeout += millis(); 0 < (long)(timeout - millis()); ) {
       if (isNetworkConnected()) {
         return true;
       }
@@ -621,8 +623,6 @@ public:
    */
 
   String sendUSSD(const String& code) {
-    sendAT(GF("+CMGF=1"));
-    waitResponse();
     sendAT(GF("+CSCS=\"HEX\""));
     waitResponse();
     sendAT(GF("+CUSD=1,\""), code, GF("\""));
@@ -646,110 +646,68 @@ public:
     }
   }
 
-  int8_t getSMSInterrupt(void){
+  int getSMSInterrupt() {
     sendAT(GF("+CFGRI?"));
-    if(waitResponse(GF(GSM_NL "+CFGRI:")) != 1) return -1;
+    if (waitResponse(GF(GSM_NL "+CFGRI:")) != 1) return -1;
     return stream.readStringUntil('\n').toInt();
   }
 
-  bool setSMSInterrupt(uint8_t status){
+  bool setSMSInterrupt(int status) {
     sendAT(GF("+CFGRI="), status);
-    if(waitResponse() != 1) return false;
+    if (waitResponse() != 1) return false;
     return true;
   }
 
-  int8_t countSMS(void){
-    sendAT(GF("+CMGF=1"));
-    if(waitResponse() != 1) return -1;
-
+  int countSMS() {
     sendAT(GF("+CPMS?"));
-    if(waitResponse(GF(GSM_NL "+CPMS:")) != 1) return -1;
-
+    if (waitResponse(GF(GSM_NL "+CPMS:")) != 1) return -1;
     streamSkipUntil(',');
-    uint8_t count = stream.readStringUntil(',').toInt();
+    int count = stream.readStringUntil(',').toInt();
     waitResponse();
-
     return count;
   }
 
-  bool deleteSMS(){
-    sendAT(GF("+CMGF=1"));
-    if(waitResponse() != 1) return false;
-
+  bool deleteSMS() {
     sendAT(GF("+CMGDA=\"DEL ALL\""));
-    if(waitResponse() != 1) return false;
-
-    return true;
+    return waitResponse() == 1;
   }
 
-  bool deleteSMS(uint8_t i){
-    sendAT(GF("+CMGF=1"));
-    if(waitResponse() != 1) return false;
-
-    sendAT(GF("CMGD="), i);
-    if(waitResponse() != 1) return false;
-
-    return true;
+  bool deleteSMS(int i) {
+    sendAT(GF("+CMGD="), i);
+    return waitResponse() == 1;
   }
 
-  bool getSMSNumber(uint8_t i, String& number){
-    sendAT(GF("+CMGF=1"));
-    if(waitResponse() != 1) return false;
-    sendAT(GF("+CSDH=1"));
-    if(waitResponse() != 1) return false;
+//  enum {
+//    unread = 0,
+//    read,
+//    unsent,
+//    sent,
+//  } GsmSmsStat;
 
+  String listSMS(TinyGsmSmsStatusStr status = TinyGsmSmsStatus::all, bool preserveStatus = true) { // GsmSmsStat stat = 0
+    sendAT(GF("+CMGL=\""), status, "\",", preserveStatus ? 1 : 0); // not change status
+    String result;
+    while (waitResponse(GF(GSM_NL "+CMGL:"), GFP(GSM_OK), GFP(GSM_ERROR)) == 1)
+      result += (char)stream.readStringUntil(',').toInt();
+    return result;
+  }
+
+  bool readSMS(int index, String& message, String& sender) {
     sendAT(GF("+CMGR="), i);
-    if(waitResponse(GF(GSM_NL "+CMGR:"))) {
+    if (waitResponse(GF(GSM_NL "+CMGR:"), GFP(GSM_OK), GFP(GSM_ERROR)) == 1) {
       streamSkipUntil(',');
       streamSkipUntil('"');
-      number = stream.readStringUntil('"');
-      return true;
-    }
-
-    return false;
-  }
-
-  bool readSMS(uint8_t i, String& msg){
-    sendAT(GF("+CMGF=1"));
-    if(waitResponse() != 1) return false;
-    sendAT(GF("+CSDH=1"));
-    if(waitResponse() != 1) return false;
-
-    sendAT(GF("+CMGR="), i);
-    if(waitResponse(GF(GSM_NL "+CMGR:"))) {
+      sender = stream.readStringUntil('"');
       streamSkipUntil('\n');
-      msg = stream.readStringUntil('\n');
-      return true;
-    }
-
-    return false;
-  }
-
-  bool readSMS(uint8_t i, String& msg, String& number){
-    sendAT(GF("+CMGF=1"));
-    if(waitResponse() != 1) return false;
-    sendAT(GF("+CSDH=1"));
-    if(waitResponse() != 1) return false;
-
-    sendAT(GF("+CMGR="), i);
-    if(waitResponse(GF(GSM_NL "+CMGR:"))) {
-      streamSkipUntil(',');
-      streamSkipUntil('"');
-      number = stream.readStringUntil('"');
-      streamSkipUntil('\n');
-      msg = stream.readStringUntil('\n');
-      return true;
+      message = stream.readStringUntil('\n');
+      return waitResponse() == 1;
     }
     return false;
   }
 
   bool sendSMS(const String& number, const String& text) {
-    sendAT(GF("+CMGF=1"));
-    waitResponse();
     sendAT(GF("+CMGS=\""), number, GF("\""));
-    if (waitResponse(GF(">")) != 1) {
-      return false;
-    }
+    if (waitResponse(GF(">")) != 1) return false;
     stream.print(text);
     stream.write((char)0x1A);
     stream.flush();
@@ -757,8 +715,6 @@ public:
   }
 
   bool sendSMS_UTF16(const String& number, const void* text, size_t len) {
-    sendAT(GF("+CMGF=1"));
-    waitResponse();
     sendAT(GF("+CSCS=\"HEX\""));
     waitResponse();
     sendAT(GF("+CSMP=17,167,0,8"));
@@ -928,9 +884,12 @@ public:
     streamWrite(tail...);
   }
 
-  bool streamSkipUntil(char c) { //TODO: timeout
-    while (true) {
-      while (!stream.available()) { TINY_GSM_YIELD(); }
+  bool streamSkipUntil(char c) {
+    for (unsigned long timeout = millis() + 1000L; 0 < (long)(timeout - millis()); ) {
+    if (!stream.available()) {
+        TINY_GSM_YIELD();
+        continue;
+      }
       if (stream.read() == c)
         return true;
     }
@@ -945,42 +904,25 @@ public:
     //DBG("### AT:", cmd...);
   }
 
-  // TODO: Optimize this!
-  uint8_t waitResponse(uint32_t timeout, String& data,
+  uint8_t waitResponse(unsigned long timeout, String& data,
                        GsmConstStr r1=GFP(GSM_OK), GsmConstStr r2=GFP(GSM_ERROR),
-                       GsmConstStr r3=NULL, GsmConstStr r4=NULL, GsmConstStr r5=NULL)
+                       GsmConstStr r3=NULL, GsmConstStr r4=NULL)
   {
-    /*String r1s(r1); r1s.trim();
-    String r2s(r2); r2s.trim();
-    String r3s(r3); r3s.trim();
-    String r4s(r4); r4s.trim();
-    String r5s(r5); r5s.trim();
-    DBG("### ..:", r1s, ",", r2s, ",", r3s, ",", r4s, ",", r5s);*/
     data.reserve(64);
-    int index = 0;
-    unsigned long startMillis = millis();
-    do {
+    uint8_t index = 0;
+    for (timeout += millis(); !index && 0 < (long)(timeout - millis()); ) {
       TINY_GSM_YIELD();
       while (stream.available() > 0) {
         int a = stream.read();
         if (a <= 0) continue; // Skip 0x00 bytes, just in case
         data += (char)a;
-        if (r1 && data.endsWith(r1)) {
-          index = 1;
-          goto finish;
-        } else if (r2 && data.endsWith(r2)) {
-          index = 2;
-          goto finish;
-        } else if (r3 && data.endsWith(r3)) {
-          index = 3;
-          goto finish;
-        } else if (r4 && data.endsWith(r4)) {
-          index = 4;
-          goto finish;
-        } else if (r5 && data.endsWith(r5)) {
-          index = 5;
-          goto finish;
-        } else if (data.endsWith(GF(GSM_NL "+CIPRXGET:"))) {
+        if (r1 && data.endsWith(r1)) index = 1; else
+        if (r2 && data.endsWith(r2)) index = 2; else
+        if (r3 && data.endsWith(r3)) index = 3; else
+        if (r4 && data.endsWith(r4)) index = 4;
+    
+        if (index) break; else
+        if (data.endsWith(GF(GSM_NL "+CIPRXGET:"))) {
           String mode = stream.readStringUntil(',');
           if (mode.toInt() == 1) {
             int mux = stream.readStringUntil('\n').toInt();
@@ -1002,30 +944,23 @@ public:
           DBG("### Closed: ", mux);
         }
       }
-    } while (millis() - startMillis < timeout);
-finish:
-    if (!index) {
-      data.trim();
-      if (data.length()) {
-        DBG("### Unhandled:", data);
-      }
-      data = "";
     }
+    if (!index) DBG("########### TIMEOUT:\"", data, "\"");
     return index;
   }
 
-  uint8_t waitResponse(uint32_t timeout,
+  uint8_t waitResponse(unsigned long timeout,
                        GsmConstStr r1=GFP(GSM_OK), GsmConstStr r2=GFP(GSM_ERROR),
-                       GsmConstStr r3=NULL, GsmConstStr r4=NULL, GsmConstStr r5=NULL)
+                       GsmConstStr r3=NULL, GsmConstStr r4=NULL)
   {
     String data;
-    return waitResponse(timeout, data, r1, r2, r3, r4, r5);
+    return waitResponse(timeout, data, r1, r2, r3, r4);
   }
 
   uint8_t waitResponse(GsmConstStr r1=GFP(GSM_OK), GsmConstStr r2=GFP(GSM_ERROR),
-                       GsmConstStr r3=NULL, GsmConstStr r4=NULL, GsmConstStr r5=NULL)
+                       GsmConstStr r3=NULL, GsmConstStr r4=NULL)
   {
-    return waitResponse(1000, r1, r2, r3, r4, r5);
+    return waitResponse(1000, r1, r2, r3, r4);
   }
 
 protected:
