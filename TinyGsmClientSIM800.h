@@ -253,7 +253,7 @@ public:
     return false;
   }
 
-  void maintain() {
+  void handleSockets() {
     for (int mux = 0; mux < TINY_GSM_MUX_COUNT; mux++) {
       GsmClient* sock = sockets[mux];
       if (sock && sock->got_data) {
@@ -261,7 +261,28 @@ public:
         sock->sock_available = modemGetAvailable(mux);
       }
     }
-    while (stream.available()) waitResponse(10); // TODO: dont wait OK/ERROR
+  }
+
+  void handleUnsolicited(String &data) {
+    // AAAAAT
+    // +CFUN: 1    // +CPIN: READY
+    if (data.endsWith(GF(GSM_NL "+CMTI:"))) handleCMTI(data);
+    else if (data.endsWith(GF(GSM_NL "+CIPRXGET:"))) handleCIPRXGET(data);
+    else if (data.endsWith(GF("CLOSED" GSM_NL))) handleCLOSE(data);
+  }
+
+  void maintain() {
+    handleSockets();
+//    while (stream.available()) waitResponse(10); // TODO: dont wait OK/ERROR
+
+    if (!stream.available()) return;
+    String data;
+    data.reserve(16);
+    do {
+      data += (char)stream.read();
+      handleUnsolicited(data);
+      if (!stream.available()) delay(1); // TINY_GSM_YIELD();
+    } while (stream.available());
   }
 
   bool factoryDefault() {
@@ -870,14 +891,6 @@ public:
     DBG("### Closed: ", mux);
   }
 
-  void handleOtherResponses(String &data) {
-    // AAAAAT
-    // +CFUN: 1    // +CPIN: READY
-    if (data.endsWith(GF(GSM_NL "+CMTI:"))) handleCMTI(data);
-    else if (data.endsWith(GF(GSM_NL "+CIPRXGET:"))) handleCIPRXGET(data);
-    else if (data.endsWith(GF("CLOSED" GSM_NL))) handleCLOSE(data);
-  }
-
   int waitResponse(unsigned long timeout, String &data, GsmConstStr r1 = NULL, GsmConstStr r2 = NULL, GsmConstStr r3 = NULL) {
     data.reserve(16);
     for (timeout += millis(); 0 < (long)(timeout - millis()); ) {
@@ -892,7 +905,7 @@ public:
         if (r3 && data.endsWith(r3)) return 3;
         if (data.endsWith(GF("OK" GSM_NL))) return AT_OK;
         if (data.endsWith(GF("ERROR" GSM_NL))) return AT_ERROR;
-        handleOtherResponses(data);
+        handleUnsolicited(data);
       }
     }
     DBG("########### TIMEOUT:\"", data, "\"");
