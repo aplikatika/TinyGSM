@@ -30,9 +30,9 @@
 
 #define GSM_NL "\r\n"
 
-#define AT_OK     0
-#define AT_ERROR  -1
-#define AT_TIMEOUT  -2
+#define AT_OK       0
+#define AT_ERROR   -1
+#define AT_TIMEOUT -2
 
 enum SimStatus {
   SIM_ERROR = 0,
@@ -218,7 +218,7 @@ public:
 
   bool init() {
     if (!testAT()) return false;
-    delay(TIMEOUT_SHORT);
+    //delay(TIMEOUT_SHORT);
 
     sendAT(GF("&FZ"));  // Factory + Reset
     if (AT_OK != waitResponse()) return false;
@@ -305,14 +305,11 @@ public:
     if (AT_OK != waitResponse()) return false;
   }
 
-  String getModemInfo() {
+  bool getModemInfo(String &s) {
     sendAT(GF("I"));
-    String res;
-    if (AT_OK != waitResponse(TIMEOUT_NORMAL, res)) return "";
-    res.replace(GSM_NL "OK" GSM_NL, "");
-    res.replace(GSM_NL, " ");
-    res.trim();
-    return res;
+    if (!streamSkipUntil(GSM_NL[1])) return false;
+    s = stream.readStringUntil(GSM_NL[0]);
+    return AT_OK == waitResponse();
   }
 
   bool hasSSL() {
@@ -369,20 +366,18 @@ public:
     return AT_OK == waitResponse();
   }
 
-  String getSimCCID() {
+  bool getSimCCID(String &s) {
     sendAT(GF("+ICCID"));
-    if (1 != waitResponse(GF(GSM_NL "+ICCID:"))) return "";
-    String res = stream.readStringUntil(GSM_NL[0]);
-    waitResponse();
-    return res;
+    if (1 != waitResponse(GF(GSM_NL "+ICCID:"))) return false;
+    s = stream.readStringUntil(GSM_NL[0]);
+    return AT_OK == waitResponse();
   }
 
-  String getIMEI() {
+  bool getIMEI(String &s) {
     sendAT(GF("+GSN"));
-    if (1 != waitResponse(GF(GSM_NL))) return "";
-    String res = stream.readStringUntil(GSM_NL[0]);
-    waitResponse();
-    return res;
+    if (!streamSkipUntil(GSM_NL[1])) return false;
+    s = stream.readStringUntil(GSM_NL[0]);
+    return AT_OK == waitResponse();
   }
 
   SimStatus getSimStatus(unsigned long timeout = 10000L) {
@@ -413,24 +408,22 @@ public:
     return (RegStatus)status;
   }
 
-  String getOperator() {
+  bool getOperator(String &s) {
     sendAT(GF("+COPS?"));
-    if (1 != waitResponse(GF(GSM_NL "+COPS:"))) return "";
-    streamSkipUntil('"'); // Skip mode and format
-    String res = stream.readStringUntil('"');
-    waitResponse();
-    return res;
+    if (1 != waitResponse(GF(GSM_NL "+COPS:"))) return false;
+    if (!streamSkipUntil('"')) return false;
+    s = stream.readStringUntil('"');
+    return AT_OK == waitResponse();
   }
 
   /*
    * Generic network functions
    */
-  int getSignalQuality() {
+  bool getSignalQuality(int &i) {
     sendAT(GF("+CSQ"));
-    if (1 != waitResponse(GF(GSM_NL "+CSQ:"))) return 99;
-    int res = stream.readStringUntil(',').toInt();
-    waitResponse();
-    return res;
+    if (1 != waitResponse(GF(GSM_NL "+CSQ:"))) return false;
+    i = stream.readStringUntil(',').toInt();
+    return AT_OK == waitResponse();
   }
 
   bool isNetworkConnected() {
@@ -449,7 +442,7 @@ public:
   /*
    * GPRS functions
    */
-  bool gprsConnect(const char* apn, const char* user, const char* pwd) {
+  bool gprsConnect(const char *apn, const char *user, const char *password) {
     gprsDisconnect();
 
     sendAT(GF("+SAPBR=3,1,\"Contype\",\"GPRS\""));
@@ -462,8 +455,8 @@ public:
       sendAT(GF("+SAPBR=3,1,\"USER\",\""), user, '"');
       if (AT_OK != waitResponse()) return false;
     }
-    if (pwd && strlen(pwd) > 0) {
-      sendAT(GF("+SAPBR=3,1,\"PWD\",\""), pwd, '"');
+    if (password && strlen(password) > 0) {
+      sendAT(GF("+SAPBR=3,1,\"PWD\",\""), password, '"');
       if (AT_OK != waitResponse()) return false;
     }
 
@@ -495,7 +488,7 @@ public:
     sendAT(GF("+CIPRXGET=1"));
     if (AT_OK != waitResponse()) return false;
 
-    sendAT(GF("+CSTT=\""), apn, GF("\",\""), user, GF("\",\""), pwd, GF("\""));
+    sendAT(GF("+CSTT=\""), apn, GF("\",\""), user, GF("\",\""), password, GF("\""));
     if (AT_OK != waitResponse(TIMEOUT_LONGER)) return false;
 
     sendAT(GF("+CIICR"));
@@ -512,7 +505,7 @@ public:
 
   bool gprsDisconnect() {
     sendAT(GF("+CIPSHUT"));
-    if (AT_OK != waitResponse(TIMEOUT_LONGER)) return false;
+    if (1 != waitResponse(GF(GSM_NL "SHUT OK" GSM_NL), TIMEOUT_LONGER)) return false;
 
     sendAT(GF("+CGATT=0"));
     if (AT_OK != waitResponse(TIMEOUT_LONGER)) return false;
@@ -522,29 +515,28 @@ public:
 
   bool isGprsConnected() {
     sendAT(GF("+CGATT?"));
+    
     if (1 != waitResponse(GF(GSM_NL "+CGATT:"))) return false;
     int res = stream.readStringUntil(GSM_NL[1]).toInt();
     waitResponse();
     if (1 != res) return false;
 
     sendAT(GF("+CIFSR;E0")); // Another option is to use AT+CGPADDR=1
-    if (AT_OK != waitResponse()) return false;
+    if (AT_OK != waitResponse(TIMEOUT_LONG)) return false;
 
     return true;
   }
 
-  String getLocalIP() {
+  bool getLocalIP(String &s) {
     sendAT(GF("+CIFSR;E0"));
-    String res;
-    if (1 != waitResponse(TIMEOUT_LONG, res)) return "";
-    res.replace(GSM_NL "OK" GSM_NL, "");
-    res.replace(GSM_NL, "");
-    res.trim();
-    return res;
+    if (!streamSkipUntil(GSM_NL[1], TIMEOUT_LONG)) return false;
+    s = stream.readStringUntil(GSM_NL[0]);
+    return AT_OK == waitResponse();
   }
 
   IPAddress localIP() {
-    return TinyGsmIpFromString(getLocalIP());
+    String ip;
+    return getLocalIP(ip) ? TinyGsmIpFromString(ip) : IPAddress();
   }
 
   /*
@@ -648,7 +640,7 @@ public:
   bool setSmsNotification(bool enable) {
     sendAT(GF("+CNMI=2,"), enable ? 1 : 0, GF(",0,0,0")); // "+CNMI=1,"
     bool success = AT_OK == waitResponse();
-    smsIndex = listSms(kSmsStatusReceivedUnread);
+    if (enable) smsIndex = listSms(kSmsStatusReceivedUnread);
     return success;
   }
 
@@ -685,9 +677,9 @@ public:
     return AT_OK == waitResponse() && (!remove || deleteSms(index));
   }
 
-  bool sendSms(const String& recipient, const String& message) {
+  bool sendSms(const String &recipient, const String &message) {
     sendAT(GF("+CMGS=\""), recipient, GF("\""));
-    if (1 != waitResponse(GF(">"))) return false;
+    if (!streamSkipUntil('>')) return false;
     stream.print(message);
     stream.write(0x1A);
     stream.flush();
@@ -721,37 +713,20 @@ public:
    * Location functions
    */
 
-  String getGsmLocation() {
+  bool getGsmLocation(String &s) {
     sendAT(GF("+CIPGSMLOC=1,1"));
-    if (1 != waitResponse(TIMEOUT_LONG, GF(GSM_NL "+CIPGSMLOC:"))) return "";
-    String res = stream.readStringUntil(GSM_NL[0]);
-    waitResponse();
-    res.trim();
-    return res;
+    if (1 != waitResponse(TIMEOUT_LONG, GF(GSM_NL "+CIPGSMLOC:"))) return false;
+    s = stream.readStringUntil(GSM_NL[0]);
+    return AT_OK == waitResponse();
   }
 
-  /*
-   * Battery functions
-   */
-  // Use: float vBatt = modem.getBattVoltage() / 1000.0;
-  uint16_t getBattVoltage() {
-    sendAT(GF("+CBC"));
-    if (1 != waitResponse(GF(GSM_NL "+CBC:"))) return 0;
-    streamSkipUntil(','); // Skip
-    streamSkipUntil(','); // Skip
-
-    uint16_t res = stream.readStringUntil(',').toInt();
-    waitResponse();
-    return res;
-  }
-
-  int getBattPercent() {
+  bool getBatteryInfo(int &p, float &v) {
     sendAT(GF("+CBC"));
     if (1 != waitResponse(GF(GSM_NL "+CBC:"))) return false;
-    stream.readStringUntil(',');
-    int res = stream.readStringUntil(',').toInt();
-    waitResponse();
-    return res;
+    if (!streamSkipUntil(',')) return false;
+    p = stream.readStringUntil(',').toInt();
+    v = stream.readStringUntil(GSM_NL[0]).toInt() / 1000.0;
+    return AT_OK == waitResponse();
   }
 
 protected:
@@ -843,19 +818,39 @@ public:
     streamWrite(tail...);
   }
 
-  bool streamSkipUntil(char c) {
-    for (unsigned long timeout = millis() + 1000L; 0 < (long)(timeout - millis()); ) {
-    if (!stream.available()) {
-        TINY_GSM_YIELD();
-        continue;
-      }
-      if (stream.read() == c) return true;
+  bool streamSkipUntil(char c, unsigned long timeout = TIMEOUT_NORMAL) {
+    for (timeout += millis(); 0 < (long)(timeout - millis()); ) {
+      if (!stream.available()) delay(1);
+      else if (c == stream.read()) return true;
     }
     return false;
   }
 
+/*  bool streamReadUntil(char c, String &s, unsigned long timeout = TIMEOUT_NORMAL) {
+    s = "";
+    for (timeout += millis(); 0 < (long)(timeout - millis()); ) {
+      if (!stream.available()) {
+        delay(1);
+        continue;
+      }
+      char r = stream.read();
+      if (c == r) return true;
+      else s += r;
+    }
+    return false;
+  }*/
+  void flush() {
+    bool flushed = false;
+    while (stream.available()) {
+      stream.read();
+      if (!stream.available()) delay(1);
+    }
+    if (flushed) DBG("*** FLUSHED");
+  }
+
   template<typename... Args>
   void sendAT(Args... cmd) {
+    flush();
     streamWrite("AT", cmd..., GSM_NL);
     stream.flush();
     TINY_GSM_YIELD();
@@ -894,7 +889,7 @@ public:
   int waitResponse(unsigned long timeout, String &data, GsmConstStr r1 = NULL, GsmConstStr r2 = NULL, GsmConstStr r3 = NULL) {
     data.reserve(16);
     for (timeout += millis(); 0 < (long)(timeout - millis()); ) {
-      TINY_GSM_YIELD();
+      delay(1);
       while (0 < stream.available()) {
 //        char c = stream.read();
 //        if (c <= 0) continue; // Skip 0x00 bytes, just in case
@@ -903,12 +898,12 @@ public:
         if (r1 && data.endsWith(r1)) return 1;
         if (r2 && data.endsWith(r2)) return 2;
         if (r3 && data.endsWith(r3)) return 3;
-        if (data.endsWith(GF("OK" GSM_NL))) return AT_OK;
-        if (data.endsWith(GF("ERROR" GSM_NL))) return AT_ERROR;
+        if (data.endsWith(GF("\nOK" GSM_NL))) return AT_OK;
+        if (data.endsWith(GF("\nERROR" GSM_NL))) return AT_ERROR;
         handleUnsolicited(data);
       }
     }
-    DBG("########### TIMEOUT:\"", data, "\"");
+    DBG("*** TIMEOUT:\"", data, "\"");
     return AT_TIMEOUT;
   }
 
